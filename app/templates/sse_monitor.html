@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSE Monitor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0d1117;
+            color: #c9d1d9;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            background: #161b22;
+            padding: 16px 24px;
+            border-bottom: 1px solid #30363d;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 { font-size: 20px; color: #58a6ff; }
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #f85149;
+            transition: background 0.3s;
+        }
+        .status-dot.connected { background: #3fb950; }
+        .controls {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        .btn {
+            background: #21262d;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .btn:hover { background: #30363d; }
+        .btn.primary { background: #238636; border-color: #238636; }
+        .btn.primary:hover { background: #2ea043; }
+        .btn.danger { background: #da3633; border-color: #da3633; }
+        .btn.danger:hover { background: #f85149; }
+        select {
+            background: #21262d;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .main {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+        .panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid #30363d;
+        }
+        .panel:last-child { border-right: none; }
+        .panel-header {
+            background: #161b22;
+            padding: 12px 16px;
+            border-bottom: 1px solid #30363d;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .panel-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+        }
+        .event-item {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 8px;
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .event-item .top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .event-type {
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .event-type.connection { background: #238636; }
+        .event-type.message { background: #1f6feb; }
+        .event-type.ping { background: #6e7681; }
+        .event-type.start { background: #8957e5; }
+        .event-type.tick { background: #9e6a03; }
+        .event-type.complete { background: #da3633; }
+        .event-type.error { background: #f85149; }
+        .event-time {
+            font-size: 11px;
+            color: #6e7681;
+        }
+        .event-data {
+            font-family: monospace;
+            font-size: 12px;
+            background: #0d1117;
+            padding: 8px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        .event-id {
+            font-size: 11px;
+            color: #8b949e;
+            margin-top: 4px;
+        }
+        .stats {
+            display: flex;
+            gap: 20px;
+            padding: 12px 16px;
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+        }
+        .stat-item {
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #58a6ff;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #6e7681;
+        }
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #6e7681;
+        }
+        .badge {
+            background: #30363d;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 12px;
+        }
+        .input-group {
+            display: flex;
+            gap: 8px;
+            padding: 12px;
+            background: #161b22;
+            border-top: 1px solid #30363d;
+        }
+        .input-group input {
+            flex: 1;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .input-group input:focus {
+            outline: none;
+            border-color: #58a6ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📡 SSE Monitor</h1>
+        <div class="status">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">Disconnected</span>
+        </div>
+        <div class="controls">
+            <select id="endpoint">
+                <option value="/sse/stream">Stream (지속 연결)</option>
+                <option value="/sse/demo">Demo (1초마다)</option>
+                <option value="/sse/summary">Summary (5초 후 종료)</option>
+            </select>
+            <button class="btn primary" id="connectBtn" onclick="toggleConnection()">Connect</button>
+            <button class="btn" onclick="clearEvents()">Clear</button>
+        </div>
+    </div>
+    <div class="stats">
+        <div class="stat-item">
+            <div class="stat-value" id="totalEvents">0</div>
+            <div class="stat-label">Total Events</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value" id="messagesCount">0</div>
+            <div class="stat-label">Messages</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value" id="pingsCount">0</div>
+            <div class="stat-label">Pings</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value" id="connectionTime">-</div>
+            <div class="stat-label">Connected</div>
+        </div>
+    </div>
+    <div class="main">
+        <div class="panel">
+            <div class="panel-header">
+                Events <span class="badge" id="eventCount">0</span>
+            </div>
+            <div class="panel-content" id="eventList">
+                <div class="empty-state">
+                    <p>Connect to an SSE endpoint to see events</p>
+                </div>
+            </div>
+        </div>
+        <div class="panel">
+            <div class="panel-header">Broadcast Message</div>
+            <div class="panel-content">
+                <p style="color: #6e7681; margin-bottom: 12px;">Send a message to all connected /sse/stream clients</p>
+                <div style="margin-bottom: 12px;">
+                    <label style="display: block; margin-bottom: 4px; font-size: 12px; color: #8b949e;">Event Type</label>
+                    <input type="text" id="broadcastEvent" value="message" style="width: 100%; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 12px; border-radius: 6px;">
+                </div>
+                <div style="margin-bottom: 12px;">
+                    <label style="display: block; margin-bottom: 4px; font-size: 12px; color: #8b949e;">Content</label>
+                    <textarea id="broadcastContent" rows="4" style="width: 100%; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 8px 12px; border-radius: 6px; resize: vertical;">Hello from SSE Monitor!</textarea>
+                </div>
+                <button class="btn primary" onclick="broadcast()" style="width: 100%;">Send Broadcast</button>
+                <div id="broadcastResult" style="margin-top: 12px; font-size: 12px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let eventSource = null;
+        let events = [];
+        let stats = { total: 0, messages: 0, pings: 0 };
+        let connectedAt = null;
+        let timerInterval = null;
+
+        function toggleConnection() {
+            if (eventSource) {
+                disconnect();
+            } else {
+                connect();
+            }
+        }
+
+        function connect() {
+            const endpoint = document.getElementById('endpoint').value;
+            eventSource = new EventSource(endpoint);
+
+            eventSource.onopen = () => {
+                document.getElementById('statusDot').classList.add('connected');
+                document.getElementById('statusText').textContent = 'Connected';
+                document.getElementById('connectBtn').textContent = 'Disconnect';
+                document.getElementById('connectBtn').classList.remove('primary');
+                document.getElementById('connectBtn').classList.add('danger');
+                connectedAt = new Date();
+                startTimer();
+            };
+
+            eventSource.onerror = (e) => {
+                addEvent({ type: 'error', data: { message: 'Connection error or closed' }});
+                disconnect();
+            };
+
+            // Listen for all event types
+            ['connection', 'message', 'ping', 'start', 'tick', 'complete'].forEach(eventType => {
+                eventSource.addEventListener(eventType, (e) => {
+                    let data;
+                    try {
+                        data = JSON.parse(e.data);
+                    } catch {
+                        data = e.data;
+                    }
+                    addEvent({ type: eventType, id: e.lastEventId, data: data });
+                });
+            });
+        }
+
+        function disconnect() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            document.getElementById('statusDot').classList.remove('connected');
+            document.getElementById('statusText').textContent = 'Disconnected';
+            document.getElementById('connectBtn').textContent = 'Connect';
+            document.getElementById('connectBtn').classList.add('primary');
+            document.getElementById('connectBtn').classList.remove('danger');
+            stopTimer();
+        }
+
+        function addEvent(event) {
+            event.timestamp = new Date().toISOString();
+            events.unshift(event);
+            if (events.length > 100) events.pop();
+
+            stats.total++;
+            if (event.type === 'ping') stats.pings++;
+            else if (event.type !== 'connection' && event.type !== 'error') stats.messages++;
+
+            updateStats();
+            renderEvents();
+        }
+
+        function updateStats() {
+            document.getElementById('totalEvents').textContent = stats.total;
+            document.getElementById('messagesCount').textContent = stats.messages;
+            document.getElementById('pingsCount').textContent = stats.pings;
+            document.getElementById('eventCount').textContent = events.length;
+        }
+
+        function startTimer() {
+            timerInterval = setInterval(() => {
+                if (connectedAt) {
+                    const diff = Math.floor((new Date() - connectedAt) / 1000);
+                    const mins = Math.floor(diff / 60);
+                    const secs = diff % 60;
+                    document.getElementById('connectionTime').textContent =
+                        mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+                }
+            }, 1000);
+        }
+
+        function stopTimer() {
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+            document.getElementById('connectionTime').textContent = '-';
+            connectedAt = null;
+        }
+
+        function renderEvents() {
+            const list = document.getElementById('eventList');
+            if (events.length === 0) {
+                list.innerHTML = '<div class="empty-state"><p>Connect to an SSE endpoint to see events</p></div>';
+                return;
+            }
+
+            list.innerHTML = events.map(event => `
+                <div class="event-item">
+                    <div class="top">
+                        <span class="event-type ${event.type}">${event.type}</span>
+                        <span class="event-time">${new Date(event.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                    <div class="event-data">${typeof event.data === 'object' ? JSON.stringify(event.data, null, 2) : event.data}</div>
+                    ${event.id ? `<div class="event-id">ID: ${event.id}</div>` : ''}
+                </div>
+            `).join('');
+        }
+
+        function clearEvents() {
+            events = [];
+            stats = { total: 0, messages: 0, pings: 0 };
+            updateStats();
+            renderEvents();
+        }
+
+        async function broadcast() {
+            const event = document.getElementById('broadcastEvent').value;
+            const content = document.getElementById('broadcastContent').value;
+            const result = document.getElementById('broadcastResult');
+
+            try {
+                const response = await fetch('/sse/broadcast', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ event, content })
+                });
+                const data = await response.json();
+                result.innerHTML = `<span style="color: ${data.success ? '#3fb950' : '#f85149'}">${data.message} (${data.clients} clients)</span>`;
+            } catch (e) {
+                result.innerHTML = `<span style="color: #f85149">Error: ${e.message}</span>`;
+            }
+        }
+    </script>
+</body>
+</html>

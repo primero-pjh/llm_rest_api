@@ -6,11 +6,23 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
 
-    # Database (예시)
-    DATABASE_URL: str = "sqlite:///./app.db"
+    # MySQL Database
+    DB_HOST: str = "localhost"
+    DB_PORT: int = 3307
+    DB_USER: str = "root"
+    DB_PASSWORD: str = "root"
+    DB_NAME: str = "pritras_db"
 
     # API 설정
     API_V1_PREFIX: str = "/api/v1"
+
+    @property
+    def DATABASE_URL(self) -> str:
+        return f"mysql+aiomysql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+
+    @property
+    def DATABASE_URL_SYNC(self) -> str:
+        return f"mysql+pymysql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
     class Config:
         env_file = ".env"
