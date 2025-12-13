@@ -53,8 +53,8 @@ class LLMService:
         self.tokenizer = None
 
         # 모델 ID (Hugging Face 모델 허브 또는 로컬 경로)
-        # 추후 커스텀 모델 사용 시 이 경로를 변경하면 됩니다
-        self.model_id = "meta-llama/Llama-3.2-3B-Instruct"
+        # 한국어 최적화된 Llama 3.2 모델 사용
+        self.model_id = "Bllossom/llama-3.2-Korean-Bllossom-3B"
 
         # 모델 로드 상태
         self.is_loaded = False
@@ -202,13 +202,23 @@ class LLMService:
             **inputs,                          # 입력 토큰
             "streamer": streamer,              # 스트리머
             "max_new_tokens": max_new_tokens,  # 최대 생성 토큰 수
-            "temperature": temperature,         # 생성 다양성
-            "top_p": top_p,                    # nucleus sampling
-            "top_k": top_k,                    # top-k sampling
-            "do_sample": True,                 # 샘플링 활성화
             "pad_token_id": self.tokenizer.pad_token_id,
             "eos_token_id": self.tokenizer.eos_token_id,
         }
+
+        # temperature에 따라 샘플링 전략 결정
+        if temperature > 0.0:
+            # 샘플링 모드: temperature > 0일 때
+            generation_kwargs.update({
+                "do_sample": True,              # 샘플링 활성화
+                "temperature": temperature,     # 생성 다양성
+                "top_p": top_p,                # nucleus sampling
+                "top_k": top_k,                # top-k sampling
+            })
+        else:
+            # Greedy decoding: temperature = 0일 때
+            # 가장 확률이 높은 토큰만 선택 (결정적 생성)
+            generation_kwargs["do_sample"] = False
 
         # 별도 스레드에서 생성 실행
         # - model.generate()는 블로킹 함수이므로 별도 스레드에서 실행
