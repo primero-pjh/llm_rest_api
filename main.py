@@ -8,6 +8,7 @@ from app.routers import terminal
 from app.routers import sse
 from app.routers import monitor
 from app.routers import mysql_viewer
+from app.routers import chat
 from app.services.llm_service import llm_service
 import asyncio
 
@@ -18,20 +19,19 @@ async def lifespan(app: FastAPI):
     await init_db()  # MySQL 접속 활성화
     print("✅ MySQL 데이터베이스 연결 완료")
 
-    # LLM 모델 자동 로드
+    # LLM 모델 자동 로드 (모든 지원 모델)
     print("=" * 60)
     print("LLM 모델 자동 로드 시작...")
+    print(f"지원 모델: {llm_service.get_supported_models()}")
     print("=" * 60)
     try:
-        # 비동기 함수에서 동기 함수 호출
+        # 비동기 함수에서 동기 함수 호출 - 모든 모델 로드
         await asyncio.to_thread(
-            llm_service.load_model,
-            model_path=None,  # 기본 모델 사용 (Bllossom/llama-3.2-Korean-Bllossom-3B)
+            llm_service.load_all_models,
             use_quantization=True  # 4bit 양자화 사용 (메모리 절약)
         )
         print("=" * 60)
-        print(f"✅ LLM 모델 로드 완료: {llm_service.model_id}")
-        print(f"✅ 디바이스: {llm_service.device}")
+        print(f"✅ LLM 모델 로드 완료: {llm_service.get_loaded_models()}")
         print("=" * 60)
     except Exception as e:
         print("=" * 60)
@@ -79,6 +79,9 @@ app.include_router(sse.router)
 
 # MySQL Viewer 라우터
 app.include_router(mysql_viewer.router)
+
+# Chat 라우터
+app.include_router(chat.router)
 
 
 @app.get("/health")

@@ -25,7 +25,8 @@ router = APIRouter(
 async def extract_schedule_stream(
     request: Request,
     text: str,
-    max_tokens: Optional[int] = 1024
+    max_tokens: Optional[int] = 1024,
+    temperature: Optional[float] = 0.1
 ):
     """
     텍스트에서 일정을 추출하여 JSON 형태로 반환하는 엔드포인트
@@ -62,25 +63,24 @@ async def extract_schedule_stream(
         try:
             # 일정 추출을 위한 시스템 프롬프트
             system_prompt = """You are an AI assistant specialized in extracting schedule information from text.
-Extract all schedules from the given text and return them in JSON format.
+Extract all schedules from the given text and return them as a JSON array.
 
 Return format:
-{
-  "schedules": [
-    {
-      "title": "event title",
-      "description": "detailed description",
-      "startDate": "YYYY-MM-DD or YYYY-MM-DD HH:MM",
-      "endDate": "YYYY-MM-DD or YYYY-MM-DD HH:MM"
-    }
-  ]
-}
+[
+  {
+    "title": "event title",
+    "description": "detailed description",
+    "startDate": "YYYY-MM-DD or YYYY-MM-DD HH:MM",
+    "endDate": "YYYY-MM-DD or YYYY-MM-DD HH:MM"
+  }
+]
 
 Important:
 - Extract ALL schedules from the text
 - If no date is specified, use null for startDate/endDate
 - If only start date is mentioned, endDate can be the same as startDate
-- Return ONLY valid JSON, no additional text"""
+- Return ONLY valid JSON array, no additional text
+- If no schedules found, return empty array: []"""
 
             # 사용자 프롬프트
             user_prompt = f"Extract all schedules from the following text:\n\n{text}"
@@ -88,6 +88,7 @@ Important:
             # 시작 이벤트 전송
             yield ServerSentEvent(
                 data=json.dumps({
+                    "type": "start",
                     "message": "일정 추출 시작",
                     "text_length": len(text),
                     "model": llm_service.model_id,
@@ -101,7 +102,7 @@ Important:
                 prompt=user_prompt,
                 system_prompt=system_prompt,
                 max_new_tokens=max_tokens,
-                temperature=1.0,  # 창의적 생성
+                temperature=temperature,
             ):
                 # 클라이언트 연결 끊김 확인
                 if await request.is_disconnected():
@@ -126,6 +127,7 @@ Important:
             # 완료 이벤트 전송
             yield ServerSentEvent(
                 data=json.dumps({
+                    "type": "complete",
                     "message": "일정 추출 완료",
                     "full_response": full_response,
                     "total_tokens": token_count,

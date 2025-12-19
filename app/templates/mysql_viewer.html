@@ -301,6 +301,54 @@
             border-radius: 8px;
         }
 
+        .copy-btn {
+            padding: 8px 16px;
+            background: #0f3460;
+            border: 1px solid #00d9ff;
+            color: #00d9ff;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+
+        .copy-btn:hover {
+            background: #00d9ff;
+            color: #1a1a2e;
+        }
+
+        .copy-btn.copied {
+            background: #4ade80;
+            border-color: #4ade80;
+            color: #1a1a2e;
+        }
+
+        .action-bar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: #4ade80;
+            color: #1a1a2e;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.3s;
+            z-index: 1000;
+        }
+
+        .toast.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
         @media (max-width: 768px) {
             .container {
                 flex-direction: column;
@@ -348,6 +396,9 @@
                 {% if error_message %}
                 <div class="error">Error: {{ error_message }}</div>
                 {% else %}
+                <div class="action-bar">
+                    <button class="copy-btn" onclick="copyAsTypeScript()">Copy as TypeScript Interface</button>
+                </div>
                 <table class="data-table">
                     <thead>
                         <tr>
@@ -484,7 +535,14 @@
         </main>
     </div>
 
+    <!-- Toast notification -->
+    <div id="toast" class="toast">Copied to clipboard!</div>
+
     <script>
+        // 테이블 스키마 데이터 (Jinja2에서 전달)
+        const tableStructure = {{ table_structure | tojson | safe }};
+        const tableName = "{{ selected_table }}";
+
         function showTab(tabName) {
             document.querySelectorAll('.tab-content').forEach(tab => {
                 tab.classList.remove('active');
@@ -496,6 +554,87 @@
 
             document.getElementById(tabName + '-tab').classList.add('active');
             event.target.classList.add('active');
+        }
+
+        // MySQL 타입을 TypeScript 타입으로 변환
+        function mysqlToTypeScript(mysqlType, isNullable) {
+            const type = mysqlType.toLowerCase();
+            let tsType;
+
+            if (type.includes('int') || type.includes('decimal') || type.includes('float') ||
+                type.includes('double') || type.includes('numeric')) {
+                tsType = 'number';
+            } else if (type.includes('bool') || type.includes('tinyint(1)')) {
+                tsType = 'boolean';
+            } else if (type.includes('json')) {
+                tsType = 'Record<string, any>';
+            } else if (type.includes('date') || type.includes('time')) {
+                tsType = 'string'; // or 'Date' if you prefer
+            } else if (type.includes('blob') || type.includes('binary')) {
+                tsType = 'Buffer';
+            } else {
+                tsType = 'string';
+            }
+
+            return isNullable === 'YES' ? `${tsType} | null` : tsType;
+        }
+
+        // snake_case를 PascalCase로 변환
+        function toPascalCase(str) {
+            return str.split('_')
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+                .join('');
+        }
+
+        // TypeScript interface 생성
+        function generateTypeScriptInterface() {
+            if (!tableStructure || tableStructure.length === 0) return '';
+
+            const interfaceName = toPascalCase(tableName) + 'Schema';
+            let lines = [`export interface ${interfaceName} {`];
+
+            tableStructure.forEach(col => {
+                const tsType = mysqlToTypeScript(col.type, col.null);
+                const fieldName = col.field;
+                lines.push(`  ${fieldName}: ${tsType};`);
+            });
+
+            lines.push('}');
+            return lines.join('\n');
+        }
+
+        // 클립보드에 복사
+        async function copyAsTypeScript() {
+            const tsInterface = generateTypeScriptInterface();
+
+            try {
+                await navigator.clipboard.writeText(tsInterface);
+
+                // 버튼 상태 변경
+                const btn = document.querySelector('.copy-btn');
+                btn.textContent = 'Copied!';
+                btn.classList.add('copied');
+
+                // 토스트 표시
+                showToast();
+
+                // 2초 후 원래 상태로
+                setTimeout(() => {
+                    btn.textContent = 'Copy as TypeScript Interface';
+                    btn.classList.remove('copied');
+                }, 2000);
+            } catch (err) {
+                console.error('Failed to copy:', err);
+                alert('Failed to copy to clipboard');
+            }
+        }
+
+        function showToast() {
+            const toast = document.getElementById('toast');
+            toast.classList.add('show');
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 2000);
         }
     </script>
 </body>
