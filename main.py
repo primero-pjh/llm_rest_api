@@ -7,6 +7,7 @@ from app.core.request_logger import RequestLoggerMiddleware
 from app.routers import terminal
 from app.routers import sse
 from app.routers import monitor
+from app.routers import mysql_viewer
 from app.services.llm_service import llm_service
 import asyncio
 
@@ -14,7 +15,8 @@ import asyncio
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    # await init_db()  # MySQL 접속 비활성화
+    await init_db()  # MySQL 접속 활성화
+    print("✅ MySQL 데이터베이스 연결 완료")
 
     # LLM 모델 자동 로드
     print("=" * 60)
@@ -40,7 +42,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    # await close_db()  # MySQL 접속 비활성화
+    await close_db()  # MySQL 접속 종료
+    print("✅ MySQL 데이터베이스 연결 종료")
     print("서버 종료 중...")
 
 
@@ -73,6 +76,9 @@ app.include_router(terminal.router)
 
 # SSE 라우터
 app.include_router(sse.router)
+
+# MySQL Viewer 라우터
+app.include_router(mysql_viewer.router)
 
 
 @app.get("/health")

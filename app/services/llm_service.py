@@ -19,7 +19,6 @@ from transformers import (
     BitsAndBytesConfig,    # 양자화 설정 (메모리 절약용)
 )
 
-
 class LLMService:
     """
     LLM 서비스 클래스

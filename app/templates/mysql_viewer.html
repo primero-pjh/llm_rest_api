@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MySQL Viewer - {{ db_name }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+
+        .container {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            width: 280px;
+            background: #16213e;
+            border-right: 1px solid #0f3460;
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            background: #0f3460;
+            border-bottom: 1px solid #1a1a2e;
+        }
+
+        .sidebar-header h1 {
+            font-size: 1.2rem;
+            color: #00d9ff;
+        }
+
+        .sidebar-header .db-name {
+            font-size: 0.9rem;
+            color: #888;
+            margin-top: 5px;
+        }
+
+        .table-list {
+            padding: 10px;
+        }
+
+        .table-item {
+            display: block;
+            padding: 12px 15px;
+            margin-bottom: 5px;
+            border-radius: 8px;
+            text-decoration: none;
+            color: #ccc;
+            transition: all 0.2s;
+        }
+
+        .table-item:hover {
+            background: #0f3460;
+            color: #fff;
+        }
+
+        .table-item.active {
+            background: #e94560;
+            color: #fff;
+        }
+
+        .table-name {
+            font-weight: 600;
+            margin-bottom: 3px;
+        }
+
+        .table-meta {
+            font-size: 0.75rem;
+            color: #888;
+        }
+
+        .table-item.active .table-meta {
+            color: rgba(255,255,255,0.7);
+        }
+
+        .main-content {
+            flex: 1;
+            padding: 30px;
+            overflow-x: auto;
+        }
+
+        .content-header {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .content-header h2 {
+            color: #00d9ff;
+        }
+
+        .record-count {
+            background: #0f3460;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            color: #888;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #0f3460;
+            padding-bottom: 10px;
+        }
+
+        .tab-btn {
+            padding: 10px 20px;
+            background: transparent;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            font-size: 0.95rem;
+            border-radius: 5px;
+            transition: all 0.2s;
+        }
+
+        .tab-btn:hover {
+            color: #fff;
+            background: #0f3460;
+        }
+
+        .tab-btn.active {
+            color: #00d9ff;
+            background: #0f3460;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #16213e;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+
+        .data-table th {
+            background: #0f3460;
+            padding: 12px 15px;
+            text-align: left;
+            font-weight: 600;
+            color: #00d9ff;
+            white-space: nowrap;
+        }
+
+        .data-table td {
+            padding: 10px 15px;
+            border-bottom: 1px solid #0f3460;
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .data-table tr:hover td {
+            background: #1a2744;
+        }
+
+        .data-table code {
+            background: #0f3460;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            color: #e94560;
+        }
+
+        .badge {
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-primary {
+            background: #e94560;
+            color: #fff;
+        }
+
+        .badge-unique {
+            background: #00d9ff;
+            color: #1a1a2e;
+        }
+
+        .badge-index {
+            background: #0f3460;
+            color: #888;
+        }
+
+        .null-value {
+            color: #666;
+            font-style: italic;
+        }
+
+        .table-responsive {
+            overflow-x: auto;
+        }
+
+        .records-table {
+            min-width: 100%;
+        }
+
+        .records-info {
+            color: #888;
+            margin-bottom: 15px;
+            font-size: 0.9rem;
+        }
+
+        .pagination {
+            display: flex;
+            gap: 5px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
+
+        .page-btn {
+            padding: 8px 14px;
+            background: #0f3460;
+            border: none;
+            color: #ccc;
+            text-decoration: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .page-btn:hover {
+            background: #e94560;
+            color: #fff;
+        }
+
+        .page-btn.active {
+            background: #e94560;
+            color: #fff;
+        }
+
+        .page-dots {
+            padding: 8px 5px;
+            color: #666;
+        }
+
+        .create-statement {
+            background: #0a0a15;
+            padding: 20px;
+            border-radius: 10px;
+            overflow-x: auto;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.9rem;
+            line-height: 1.6;
+            color: #aaa;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .welcome {
+            text-align: center;
+            padding: 100px 20px;
+        }
+
+        .welcome h2 {
+            color: #00d9ff;
+            margin-bottom: 15px;
+        }
+
+        .welcome p {
+            color: #888;
+        }
+
+        h3 {
+            color: #e94560;
+            margin: 30px 0 15px;
+            font-size: 1rem;
+        }
+
+        .error {
+            background: #e94560;
+            color: #fff;
+            padding: 15px 20px;
+            border-radius: 8px;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                flex-direction: column;
+            }
+
+            .sidebar {
+                width: 100%;
+                max-height: 200px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1>MySQL Viewer</h1>
+                <div class="db-name">{{ db_name }}</div>
+            </div>
+            <div class="table-list">
+                {% for t in tables_info %}
+                <a href="/mysql?table={{ t.name }}" class="table-item {% if t.name == selected_table %}active{% endif %}">
+                    <div class="table-name">{{ t.name }}</div>
+                    <div class="table-meta">{{ "{:,}".format(t.rows) }} rows | {{ t.size }} KB</div>
+                </a>
+                {% endfor %}
+            </div>
+        </aside>
+
+        <main class="main-content">
+            {% if selected_table %}
+            <div class="content-header">
+                <h2>{{ selected_table }}</h2>
+                <span class="record-count">{{ "{:,}".format(total_records) }} records</span>
+            </div>
+
+            <div class="tabs">
+                <button class="tab-btn active" onclick="showTab('structure')">Structure</button>
+                <button class="tab-btn" onclick="showTab('records')">Records</button>
+                <button class="tab-btn" onclick="showTab('create')">CREATE Statement</button>
+            </div>
+
+            <!-- Structure Tab -->
+            <div id="structure-tab" class="tab-content active">
+                {% if error_message %}
+                <div class="error">Error: {{ error_message }}</div>
+                {% else %}
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Field</th>
+                            <th>Type</th>
+                            <th>Null</th>
+                            <th>Key</th>
+                            <th>Default</th>
+                            <th>Extra</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for col in table_structure %}
+                        <tr>
+                            <td><strong>{{ col.field }}</strong></td>
+                            <td><code>{{ col.type }}</code></td>
+                            <td>{{ col.null }}</td>
+                            <td>
+                                {% if col.key == 'PRI' %}
+                                <span class="badge badge-primary">PRI</span>
+                                {% elif col.key == 'UNI' %}
+                                <span class="badge badge-unique">UNI</span>
+                                {% elif col.key == 'MUL' %}
+                                <span class="badge badge-index">MUL</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ col.default }}</td>
+                            <td>{{ col.extra }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+
+                {% if indexes_info %}
+                <h3>Indexes</h3>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Column</th>
+                            <th>Unique</th>
+                            <th>Type</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for idx in indexes_info %}
+                        <tr>
+                            <td>{{ idx.name }}</td>
+                            <td>{{ idx.column }}</td>
+                            <td>{{ idx.unique }}</td>
+                            <td>{{ idx.type }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+                {% endif %}
+            </div>
+
+            <!-- Records Tab -->
+            <div id="records-tab" class="tab-content">
+                <div class="records-info">
+                    Showing {{ (current_page - 1) * per_page + 1 }} - {{ [current_page * per_page, total_records] | min }} of {{ "{:,}".format(total_records) }} records
+                </div>
+
+                {% if table_records %}
+                <div class="table-responsive">
+                    <table class="data-table records-table">
+                        <thead>
+                            <tr>
+                                {% for col in column_names %}
+                                <th>{{ col }}</th>
+                                {% endfor %}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for record in table_records %}
+                            <tr>
+                                {% for col in column_names %}
+                                <td class="{% if record[col] == 'NULL' %}null-value{% endif %}">{{ record[col] }}</td>
+                                {% endfor %}
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
+
+                {% if total_pages > 1 %}
+                <div class="pagination">
+                    {% if current_page > 1 %}
+                    <a href="/mysql?table={{ selected_table }}&page={{ current_page - 1 }}&per_page={{ per_page }}" class="page-btn">Prev</a>
+                    {% endif %}
+
+                    {% set start_page = [1, current_page - 2] | max %}
+                    {% set end_page = [total_pages, current_page + 2] | min %}
+
+                    {% if start_page > 1 %}
+                    <a href="/mysql?table={{ selected_table }}&page=1&per_page={{ per_page }}" class="page-btn">1</a>
+                    {% if start_page > 2 %}
+                    <span class="page-dots">...</span>
+                    {% endif %}
+                    {% endif %}
+
+                    {% for p in range(start_page, end_page + 1) %}
+                    <a href="/mysql?table={{ selected_table }}&page={{ p }}&per_page={{ per_page }}" class="page-btn {% if p == current_page %}active{% endif %}">{{ p }}</a>
+                    {% endfor %}
+
+                    {% if end_page < total_pages %}
+                    {% if end_page < total_pages - 1 %}
+                    <span class="page-dots">...</span>
+                    {% endif %}
+                    <a href="/mysql?table={{ selected_table }}&page={{ total_pages }}&per_page={{ per_page }}" class="page-btn">{{ total_pages }}</a>
+                    {% endif %}
+
+                    {% if current_page < total_pages %}
+                    <a href="/mysql?table={{ selected_table }}&page={{ current_page + 1 }}&per_page={{ per_page }}" class="page-btn">Next</a>
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- CREATE Statement Tab -->
+            <div id="create-tab" class="tab-content">
+                <pre class="create-statement">{{ create_statement }}</pre>
+            </div>
+
+            {% else %}
+            <div class="welcome">
+                <h2>MySQL Database Viewer</h2>
+                <p>Select a table from the sidebar to view its structure and records.</p>
+            </div>
+            {% endif %}
+        </main>
+    </div>
+
+    <script>
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            document.getElementById(tabName + '-tab').classList.add('active');
+            event.target.classList.add('active');
+        }
+    </script>
+</body>
+</html>

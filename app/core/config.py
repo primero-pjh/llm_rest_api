@@ -8,9 +8,9 @@ class Settings(BaseSettings):
 
     # MySQL Database
     DB_HOST: str = "localhost"
-    DB_PORT: int = 3307
+    DB_PORT: int = 3306
     DB_USER: str = "root"
-    DB_PASSWORD: str = "root"
+    DB_PASSWORD: str = ""
     DB_NAME: str = "pritras_db"
 
     # API 설정

@@ -2,6 +2,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 from sqlalchemy.orm import declarative_base
 from app.core.config import settings
 
+# Base Model (모델들이 import 되기 전에 정의)
+Base = declarative_base()
+
 # Async Engine
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -20,10 +23,6 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False,
 )
 
-# Base Model
-Base = declarative_base()
-
-
 async def get_db() -> AsyncSession:
     """Dependency for getting async database session"""
     async with AsyncSessionLocal() as session:
@@ -39,6 +38,9 @@ async def get_db() -> AsyncSession:
 
 async def init_db():
     """Initialize database tables"""
+    # 모델들을 import하여 Base.metadata에 등록
+    from app.models import User, Calendar, CalendarEvent
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
