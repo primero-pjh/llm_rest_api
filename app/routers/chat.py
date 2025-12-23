@@ -16,9 +16,11 @@ import asyncio
 import json
 from datetime import datetime
 
-from app.core.database import get_db
-from app.models.chat import ChatSession, ChatMessage, MessageRole
+from app.core.database import get_db, AsyncSessionLocal
+from app.models.chat import ChatSession, ChatMessage, MessageRole, ToolLog, ToolCallStatus
 from app.services.llm_service import llm_service
+from app.services.agent_service import AgentService, AgentState, AgentContext
+from app.mcp.client import mcp_client
 
 router = APIRouter(
     prefix="/sse/chat",
@@ -53,6 +55,23 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ToolLogResponse(BaseModel):
+    """도구 호출 로그 응답 모델"""
+    id: int
+    session_id: Optional[int]
+    tool_name: str
+    tool_arguments: Optional[dict]
+    status: str
+    result_content: Optional[str]
+    error_message: Optional[str]
+    execution_time_ms: Optional[int]
+    created_at: datetime
+    completed_at: Optional[datetime]
 
     class Config:
         from_attributes = True
@@ -290,7 +309,6 @@ async def get_messages(
 
 
 # ============== Chat Endpoints (SSE) ==============
-
 @router.get("/send")
 async def send_message(
     request: Request,
@@ -318,23 +336,40 @@ async def send_message(
         le=2.0,
         description="응답의 창의성/무작위성을 조절하는 값입니다. 범위: 0.0-2.0. 낮은 값(0.1-0.3)은 일관되고 결정적인 응답(사실 기반 Q&A에 적합), 중간 값(0.5-0.8)은 균형 잡힌 응답(일반 대화에 적합), 높은 값(1.0-2.0)은 창의적이고 다양한 응답(창작, 브레인스토밍에 적합)을 생성합니다."
     ),
+    use_tools: bool = Query(
+        False,
+        description="도구 호출 기능을 활성화합니다. True로 설정하면 LLM이 필요에 따라 웹 검색, DB 조회, API 호출, 계산기 등의 도구를 사용하여 답변합니다. 도구 호출 내역은 tool_logs 테이블에 기록됩니다."
+    ),
+    session_id: Optional[int] = Query(
+        None,
+        description="도구 호출 로그를 연결할 세션 ID입니다. use_tools=true일 때만 사용됩니다. 지정하면 해당 세션에 도구 호출 로그가 연결되어 나중에 조회할 수 있습니다."
+    ),
+    max_iterations: int = Query(
+        5,
+        ge=1,
+        le=10,
+        description="도구를 호출할 수 있는 최대 횟수입니다. use_tools=true일 때만 사용됩니다. 무한 루프를 방지합니다."
+    ),
 ):
     """
     LLM에게 메시지를 전송하고 실시간 스트리밍 응답을 받습니다.
 
     이 API는 Server-Sent Events(SSE)를 통해 LLM의 응답을 토큰 단위로 실시간 스트리밍합니다.
-    DB에 저장하지 않고 순수하게 LLM 응답만 반환하므로, 일회성 질문이나 테스트에 적합합니다.
+    use_tools=true로 설정하면 LLM이 필요시 MCP 도구를 호출하여 답변합니다.
 
     사용 시나리오:
     - 사용자가 AI 어시스턴트와 실시간 대화하고 싶을 때
     - 텍스트 기반 질문에 대한 즉각적인 답변이 필요할 때
     - 코드 생성, 번역, 요약, 설명 등 텍스트 처리가 필요할 때
-    - 대화 기록 저장 없이 빠르게 LLM을 테스트하고 싶을 때
+    - use_tools=true: 웹 검색, DB 조회 등 도구가 필요한 질문에 답변할 때
 
     SSE Events (각 이벤트는 JSON 형식):
-    - start: 스트리밍 시작. {type: "start", model: "모델명", timestamp: "ISO8601"}
+    - start: 스트리밍 시작. {type: "start", model: "모델명", use_tools: bool, timestamp: "ISO8601"}
+    - thinking: (use_tools=true) 에이전트가 생각 중. {type: "thinking", iteration: 숫자}
+    - tool_call: (use_tools=true) 도구 호출 시작. {type: "tool_call", tool_name: "도구명", arguments: {...}, log_id: 숫자}
+    - tool_result: (use_tools=true) 도구 결과. {type: "tool_result", tool_name: "도구명", success: bool, content/error: ...}
     - message: 토큰 생성 중. {type: "token", token: "생성된토큰", full_text: "전체텍스트", token_count: 숫자}
-    - complete: 스트리밍 완료. {type: "complete", full_response: "전체응답", total_tokens: 숫자, generation_time_ms: 밀리초}
+    - complete: 스트리밍 완료. {type: "complete", full_response: "전체응답", total_tokens: 숫자, generation_time_ms: 밀리초, tool_calls_count: 숫자}
     - error: 에러 발생. {type: "error", error: "에러메시지", error_type: "에러타입"}
 
     Returns:
@@ -355,6 +390,17 @@ async def send_message(
             }
         )
 
+    # use_tools=true인 경우 에이전트 모드로 처리
+    if use_tools:
+        return await _send_message_with_tools(
+            request=request,
+            message=message,
+            model_name=model_name,
+            session_id=session_id,
+            max_iterations=max_iterations,
+        )
+
+    # 기존 로직: 도구 없이 단순 LLM 응답
     async def chat_generator() -> AsyncGenerator[ServerSentEvent, None]:
         """채팅 응답 스트리밍 제너레이터"""
         token_count = 0
@@ -367,6 +413,7 @@ async def send_message(
                 data=json.dumps({
                     "type": "start",
                     "model": model_name,
+                    "use_tools": False,
                     "timestamp": datetime.now().isoformat()
                 }, ensure_ascii=False),
                 event="start"
@@ -430,3 +477,310 @@ async def send_message(
             print(f"채팅 스트리밍 취소됨. 토큰: {token_count}")
 
     return EventSourceResponse(chat_generator())
+
+
+async def _send_message_with_tools(
+    request: Request,
+    message: str,
+    model_name: str,
+    session_id: Optional[int],
+    max_iterations: int,
+) -> EventSourceResponse:
+    """도구 호출 기능이 포함된 메시지 전송 (내부 함수)"""
+
+    async def agent_chat_generator() -> AsyncGenerator[ServerSentEvent, None]:
+        """도구 호출 가능한 에이전트 채팅 응답 스트리밍 제너레이터"""
+        start_time = datetime.now()
+        tool_calls_count = 0
+        token_count = 0
+        current_tool_log_id: Optional[int] = None
+        tool_start_time: Optional[datetime] = None
+
+        try:
+            # 시작 이벤트
+            yield ServerSentEvent(
+                data=json.dumps({
+                    "type": "start",
+                    "model": model_name,
+                    "use_tools": True,
+                    "session_id": session_id,
+                    "timestamp": datetime.now().isoformat()
+                }, ensure_ascii=False),
+                event="start"
+            )
+
+            # 에이전트 컨텍스트 생성
+            context = AgentContext(max_iterations=max_iterations)
+
+            # 에이전트 서비스 생성
+            agent = AgentService(model_name=model_name)
+
+            # 에이전트 실행
+            async for event in agent.run_stream(message, context):
+                # 클라이언트 연결 끊김 확인
+                if await request.is_disconnected():
+                    break
+
+                state = event["state"]
+
+                if state == AgentState.THINKING:
+                    yield ServerSentEvent(
+                        data=json.dumps({
+                            "type": "thinking",
+                            "iteration": event.get("iteration", 1),
+                            "timestamp": datetime.now().isoformat()
+                        }, ensure_ascii=False),
+                        event="thinking"
+                    )
+
+                elif state == AgentState.TOOL_CALL:
+                    tool_calls_count += 1
+                    tool_name = event["tool_call"]["name"]
+                    tool_args = event["tool_call"]["arguments"]
+                    tool_start_time = datetime.now()
+
+                    # 도구 호출 로그 생성 (PENDING 상태)
+                    async with AsyncSessionLocal() as db:
+                        tool_log = ToolLog(
+                            session_id=session_id,
+                            tool_name=tool_name,
+                            tool_arguments=tool_args,
+                            status=ToolCallStatus.PENDING
+                        )
+                        db.add(tool_log)
+                        await db.commit()
+                        await db.refresh(tool_log)
+                        current_tool_log_id = tool_log.id
+
+                    yield ServerSentEvent(
+                        data=json.dumps({
+                            "type": "tool_call",
+                            "tool_name": tool_name,
+                            "arguments": tool_args,
+                            "log_id": current_tool_log_id,
+                            "timestamp": datetime.now().isoformat()
+                        }, ensure_ascii=False),
+                        event="tool_call"
+                    )
+
+                elif state == AgentState.TOOL_RESULT:
+                    tool_result = event["tool_result"]
+                    tool_end_time = datetime.now()
+                    execution_time = int((tool_end_time - tool_start_time).total_seconds() * 1000) if tool_start_time else None
+
+                    # 도구 호출 로그 업데이트
+                    if current_tool_log_id:
+                        async with AsyncSessionLocal() as db:
+                            result = await db.execute(
+                                select(ToolLog).where(ToolLog.id == current_tool_log_id)
+                            )
+                            tool_log = result.scalar_one_or_none()
+                            if tool_log:
+                                if tool_result.get("success", False):
+                                    tool_log.status = ToolCallStatus.SUCCESS
+                                    tool_log.result_content = json.dumps(tool_result.get("content"), ensure_ascii=False) if tool_result.get("content") else None
+                                else:
+                                    tool_log.status = ToolCallStatus.FAILED
+                                    tool_log.error_message = tool_result.get("error")
+                                tool_log.execution_time_ms = execution_time
+                                tool_log.completed_at = tool_end_time
+                                await db.commit()
+
+                    yield ServerSentEvent(
+                        data=json.dumps({
+                            "type": "tool_result",
+                            "success": tool_result.get("success", False),
+                            "content": tool_result.get("content") if tool_result.get("success") else None,
+                            "error": tool_result.get("error") if not tool_result.get("success") else None,
+                            "log_id": current_tool_log_id,
+                            "execution_time_ms": execution_time,
+                            "timestamp": datetime.now().isoformat()
+                        }, ensure_ascii=False),
+                        event="tool_result"
+                    )
+
+                elif state == AgentState.RESPONDING:
+                    if event.get("is_streaming"):
+                        token_count += 1
+                        yield ServerSentEvent(
+                            data=json.dumps({
+                                "type": "token",
+                                "token": event["content"],
+                                "full_text": event.get("full_text", ""),
+                                "token_count": token_count
+                            }, ensure_ascii=False),
+                            event="message",
+                            id=str(token_count)
+                        )
+
+                elif state == AgentState.COMPLETED:
+                    generation_time = int((datetime.now() - start_time).total_seconds() * 1000)
+                    yield ServerSentEvent(
+                        data=json.dumps({
+                            "type": "complete",
+                            "full_response": event["content"],
+                            "total_tokens": token_count,
+                            "tool_calls_count": tool_calls_count,
+                            "total_iterations": event.get("total_iterations", 1),
+                            "generation_time_ms": generation_time,
+                            "timestamp": datetime.now().isoformat()
+                        }, ensure_ascii=False),
+                        event="complete"
+                    )
+
+                elif state == AgentState.ERROR:
+                    yield ServerSentEvent(
+                        data=json.dumps({
+                            "type": "error",
+                            "error": event.get("error", "Unknown error"),
+                            "message": event["content"]
+                        }, ensure_ascii=False),
+                        event="error"
+                    )
+
+                await asyncio.sleep(0)
+
+        except Exception as e:
+            yield ServerSentEvent(
+                data=json.dumps({
+                    "type": "error",
+                    "error": str(e),
+                    "error_type": type(e).__name__
+                }, ensure_ascii=False),
+                event="error"
+            )
+
+        except asyncio.CancelledError:
+            print(f"에이전트 스트리밍 취소됨. 토큰: {token_count}, 도구 호출: {tool_calls_count}")
+
+    return EventSourceResponse(agent_chat_generator())
+
+
+# ============== Tool Logs Endpoints ==============
+
+@router.get("/sessions/{session_id}/tool-logs", response_model=List[ToolLogResponse])
+async def get_tool_logs(
+    session_id: int,
+    limit: int = Query(
+        50,
+        ge=1,
+        le=200,
+        description="한 번에 조회할 로그 수입니다. 범위: 1-200. 기본값: 50."
+    ),
+    offset: int = Query(
+        0,
+        ge=0,
+        description="건너뛸 로그 수입니다. 기본값: 0. 페이지네이션에 사용합니다."
+    ),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    특정 세션의 도구 호출 로그를 조회합니다.
+
+    use_tools=true로 /send를 호출했을 때 발생한 도구 호출 내역을 조회합니다.
+    각 도구 호출의 이름, 인자, 결과, 실행 시간 등을 확인할 수 있습니다.
+
+    Path Parameters:
+        session_id: 로그를 조회할 세션의 고유 ID (정수)
+
+    Returns:
+        List[ToolLogResponse]: 도구 호출 로그 목록.
+        각 로그에는 tool_name, tool_arguments, status, result_content, error_message,
+        execution_time_ms, created_at, completed_at가 포함됩니다.
+
+    Raises:
+        404: 해당 ID의 세션이 존재하지 않을 때
+    """
+    # 세션 존재 확인
+    result = await db.execute(
+        select(ChatSession).where(ChatSession.id == session_id)
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # 도구 로그 조회
+    result = await db.execute(
+        select(ToolLog)
+        .where(ToolLog.session_id == session_id)
+        .order_by(ToolLog.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    logs = result.scalars().all()
+
+    return [
+        ToolLogResponse(
+            id=log.id,
+            session_id=log.session_id,
+            tool_name=log.tool_name,
+            tool_arguments=log.tool_arguments,
+            status=log.status.value,
+            result_content=log.result_content,
+            error_message=log.error_message,
+            execution_time_ms=log.execution_time_ms,
+            created_at=log.created_at,
+            completed_at=log.completed_at
+        )
+        for log in logs
+    ]
+
+
+@router.get("/tool-logs", response_model=List[ToolLogResponse])
+async def get_all_tool_logs(
+    limit: int = Query(
+        50,
+        ge=1,
+        le=200,
+        description="한 번에 조회할 로그 수입니다. 범위: 1-200. 기본값: 50."
+    ),
+    offset: int = Query(
+        0,
+        ge=0,
+        description="건너뛸 로그 수입니다. 기본값: 0. 페이지네이션에 사용합니다."
+    ),
+    status: Optional[str] = Query(
+        None,
+        description="필터링할 상태. 'pending', 'success', 'failed', 'timeout' 중 하나."
+    ),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    모든 도구 호출 로그를 조회합니다.
+
+    세션과 관계없이 모든 도구 호출 내역을 조회합니다.
+    상태별 필터링이 가능합니다.
+
+    Returns:
+        List[ToolLogResponse]: 도구 호출 로그 목록. 최신순으로 정렬됩니다.
+    """
+    query = select(ToolLog).order_by(ToolLog.created_at.desc())
+
+    if status:
+        try:
+            status_enum = ToolCallStatus(status)
+            query = query.where(ToolLog.status == status_enum)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status: {status}. Must be one of: pending, success, failed, timeout"
+            )
+
+    query = query.limit(limit).offset(offset)
+    result = await db.execute(query)
+    logs = result.scalars().all()
+
+    return [
+        ToolLogResponse(
+            id=log.id,
+            session_id=log.session_id,
+            tool_name=log.tool_name,
+            tool_arguments=log.tool_arguments,
+            status=log.status.value,
+            result_content=log.result_content,
+            error_message=log.error_message,
+            execution_time_ms=log.execution_time_ms,
+            created_at=log.created_at,
+            completed_at=log.completed_at
+        )
+        for log in logs
+    ]

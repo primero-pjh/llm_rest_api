@@ -40,6 +40,7 @@ async def init_db():
     """Initialize database tables"""
     # 모델들을 import하여 Base.metadata에 등록
     from app.models import User, Calendar, CalendarEvent
+    from app.models.chat import ChatSession, ChatMessage, ToolLog
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

@@ -20,7 +20,7 @@ LLM 챗봇 대화 내용을 저장하는 테이블 모델
     assistant_msg = ChatMessage(session_id=1, role=MessageRole.ASSISTANT, content="안녕하세요!")
 """
 
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum, func
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum, JSON, func
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 import enum
@@ -40,6 +40,24 @@ class MessageRole(str, enum.Enum):
     USER = "user"
     ASSISTANT = "assistant"
     SYSTEM = "system"
+
+
+class ToolCallStatus(str, enum.Enum):
+    """
+    도구 호출 상태 열거형
+
+    MCP 도구 호출의 실행 상태를 나타냅니다.
+
+    Values:
+        PENDING: 대기 중 (호출 시작됨)
+        SUCCESS: 성공적으로 완료됨
+        FAILED: 실행 중 에러 발생
+        TIMEOUT: 타임아웃으로 실패
+    """
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
 
 
 class ChatSession(Base):
@@ -158,3 +176,62 @@ class ChatMessage(Base):
     def __repr__(self):
         content_preview = self.content[:50] + "..." if len(self.content) > 50 else self.content
         return f"<ChatMessage(id={self.id}, role='{self.role.value}', content='{content_preview}')>"
+
+
+class ToolLog(Base):
+    """
+    도구 호출 로그 테이블
+
+    LLM 에이전트가 MCP를 통해 호출한 도구의 실행 기록을 저장합니다.
+    도구 호출의 입력, 출력, 상태, 실행 시간 등을 추적하여
+    디버깅, 모니터링, 분석에 활용합니다.
+
+    Attributes:
+        id (int): 로그 고유 식별자 (PK, Auto Increment)
+        session_id (int, optional): 소속 세션 ID (FK → chat_sessions.id)
+            - NULL 허용: 세션 없이 도구만 호출하는 경우
+            - 세션 삭제 시 CASCADE 삭제
+        tool_name (str): 호출된 도구 이름
+            - 예: "web_search", "database_query", "api_call", "calculator"
+        tool_arguments (JSON, optional): 도구에 전달된 인자
+            - 예: {"query": "서울 날씨", "num_results": 5}
+        status (ToolCallStatus): 도구 호출 상태
+            - PENDING: 호출 시작
+            - SUCCESS: 성공
+            - FAILED: 실패
+            - TIMEOUT: 타임아웃
+        result_content (str, optional): 도구 실행 결과
+            - 성공 시 결과 내용
+            - JSON 문자열로 저장
+        error_message (str, optional): 에러 메시지
+            - 실패 시 에러 상세 내용
+        execution_time_ms (int, optional): 실행 소요 시간 (밀리초)
+            - 성능 모니터링용
+        created_at (datetime): 도구 호출 시작 시각
+        completed_at (datetime, optional): 도구 실행 완료 시각
+
+    Relationships:
+        session: ChatSession 모델과의 관계 (N:1)
+
+    Notes:
+        - 도구 호출 시 PENDING 상태로 생성
+        - 완료 시 status, result_content/error_message, completed_at 업데이트
+    """
+    __tablename__ = "tool_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, comment="로그 고유 식별자")
+    session_id = Column(Integer, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=True, index=True, comment="소속 세션 ID (없을 수 있음)")
+    tool_name = Column(String(100), nullable=False, comment="호출된 도구 이름")
+    tool_arguments = Column(JSON, nullable=True, comment="도구에 전달된 인자")
+    status = Column(Enum(ToolCallStatus), default=ToolCallStatus.PENDING, nullable=False, comment="도구 호출 상태")
+    result_content = Column(Text, nullable=True, comment="도구 실행 결과")
+    error_message = Column(Text, nullable=True, comment="에러 메시지 (실패 시)")
+    execution_time_ms = Column(Integer, nullable=True, comment="실행 소요 시간 (ms)")
+    created_at = Column(DateTime, server_default=func.now(), comment="호출 시작 시각")
+    completed_at = Column(DateTime, nullable=True, comment="실행 완료 시각")
+
+    # 관계 설정
+    session = relationship("ChatSession", backref="tool_logs")
+
+    def __repr__(self):
+        return f"<ToolLog(id={self.id}, tool='{self.tool_name}', status='{self.status.value}')>"

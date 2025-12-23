@@ -12,3 +12,6 @@ sse-starlette==2.1.3
 transformers>=4.43.0
 torch>=2.0.0
 accelerate>=0.26.0
+# MCP (Model Context Protocol) Dependencies
+mcp>=1.0.0
+httpx>=0.27.0

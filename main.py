@@ -9,6 +9,7 @@ from app.routers import sse
 from app.routers import monitor
 from app.routers import mysql_viewer
 from app.routers import chat
+from app.routers import agent
 from app.services.llm_service import llm_service
 import asyncio
 
@@ -82,6 +83,9 @@ app.include_router(mysql_viewer.router)
 
 # Chat 라우터
 app.include_router(chat.router)
+
+# Agent 라우터 (도구 호출 가능한 에이전트)
+app.include_router(agent.router)
 
 
 @app.get("/health")
