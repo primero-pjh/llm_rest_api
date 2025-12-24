@@ -293,6 +293,47 @@ async def list_tools() -> list[Tool]:
                 "required": ["expression"]
             }
         ),
+        Tool(
+            name="check_calendar_conflicts",
+            description="""주어진 시간대에 겹치는 기존 일정을 조회합니다.
+
+사용 예시:
+- 새로운 일정을 추가하기 전에 충돌 확인
+- 특정 시간대의 일정 가용성 확인
+
+충돌 조건: (기존.start < 새.end) AND (기존.end > 새.start)
+
+반환 값:
+- has_conflict: 충돌 여부 (boolean)
+- conflicting_events: 충돌하는 기존 일정 목록
+- conflict_count: 충돌하는 일정 수""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "user_id": {
+                        "type": "integer",
+                        "description": "일정을 확인할 사용자 ID"
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "시작 날짜 (YYYY-MM-DD 형식)"
+                    },
+                    "start_time": {
+                        "type": "string",
+                        "description": "시작 시간 (HH:MM 형식, 종일 이벤트는 '00:00')"
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "종료 날짜 (YYYY-MM-DD 형식)"
+                    },
+                    "end_time": {
+                        "type": "string",
+                        "description": "종료 시간 (HH:MM 형식, 종일 이벤트는 '23:59')"
+                    }
+                },
+                "required": ["user_id", "start_date", "start_time", "end_date", "end_time"]
+            }
+        ),
     ]
 
 
@@ -322,6 +363,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
 
     elif name == "calculator":
         return await _handle_calculator(arguments)
+
+    elif name == "check_calendar_conflicts":
+        return await _handle_check_calendar_conflicts(arguments)
 
     else:
         return CallToolResult(
@@ -1028,6 +1072,108 @@ async def _handle_calculator(arguments: dict) -> CallToolResult:
     except Exception as e:
         return CallToolResult(
             content=[TextContent(type="text", text=f"계산 오류: {str(e)}")],
+            isError=True
+        )
+
+
+async def _handle_check_calendar_conflicts(arguments: dict) -> CallToolResult:
+    """일정 충돌 감지"""
+    user_id = arguments.get("user_id")
+    start_date = arguments.get("start_date")
+    start_time = arguments.get("start_time", "00:00")
+    end_date = arguments.get("end_date")
+    end_time = arguments.get("end_time", "23:59")
+
+    try:
+        # 날짜/시간 문자열을 datetime으로 변환
+        new_start = datetime.strptime(f"{start_date} {start_time}", "%Y-%m-%d %H:%M")
+        new_end = datetime.strptime(f"{end_date} {end_time}", "%Y-%m-%d %H:%M")
+
+        from app.core.database import AsyncSessionLocal
+        from sqlalchemy import text
+
+        async with AsyncSessionLocal() as session:
+            # 충돌 조건: (기존.start < 새.end) AND (기존.end > 새.start)
+            # 사용자의 캘린더에 있는 이벤트만 조회
+            sql = text("""
+                SELECT 
+                    ce.id,
+                    ce.title,
+                    ce.description,
+                    ce.start_date,
+                    ce.start_time,
+                    ce.end_date,
+                    ce.end_time,
+                    ce.is_all_day,
+                    ce.location
+                FROM calendar_events ce
+                JOIN calendars c ON ce.calendar_id = c.id
+                WHERE c.owner_id = :user_id
+                  AND ce.status = 'scheduled'
+                  AND (
+                    CASE 
+                      WHEN ce.is_all_day = 1 THEN
+                        DATE(ce.start_date) <= DATE(:new_end_date) 
+                        AND DATE(ce.end_date) >= DATE(:new_start_date)
+                      ELSE
+                        TIMESTAMP(ce.start_date, COALESCE(ce.start_time, '00:00:00')) < :new_end
+                        AND TIMESTAMP(ce.end_date, COALESCE(ce.end_time, '23:59:59')) > :new_start
+                    END
+                  )
+                ORDER BY ce.start_date, ce.start_time
+                LIMIT 20
+            """)
+
+            result = await session.execute(sql, {
+                "user_id": user_id,
+                "new_start": new_start,
+                "new_end": new_end,
+                "new_start_date": start_date,
+                "new_end_date": end_date,
+            })
+            rows = result.fetchall()
+
+            # 충돌하는 이벤트 목록 생성
+            conflicting_events = []
+            for row in rows:
+                event = {
+                    "id": row[0],
+                    "title": row[1],
+                    "description": row[2],
+                    "start_date": str(row[3]) if row[3] else None,
+                    "start_time": str(row[4]) if row[4] else None,
+                    "end_date": str(row[5]) if row[5] else None,
+                    "end_time": str(row[6]) if row[6] else None,
+                    "is_all_day": bool(row[7]),
+                    "location": row[8],
+                }
+                conflicting_events.append(event)
+
+            response = {
+                "has_conflict": len(conflicting_events) > 0,
+                "conflict_count": len(conflicting_events),
+                "conflicting_events": conflicting_events,
+                "checked_period": {
+                    "start": f"{start_date} {start_time}",
+                    "end": f"{end_date} {end_time}",
+                },
+                "user_id": user_id,
+            }
+
+            return CallToolResult(
+                content=[TextContent(
+                    type="text",
+                    text=json.dumps(response, ensure_ascii=False, indent=2, default=str)
+                )]
+            )
+    except ValueError as e:
+        return CallToolResult(
+            content=[TextContent(type="text", text=f"날짜/시간 형식 오류: {str(e)}. YYYY-MM-DD HH:MM 형식을 사용하세요.")],
+            isError=True
+        )
+    except Exception as e:
+        return CallToolResult(
+            content=[TextContent(type="text", text=f"충돌 감지 오류: {str(e)}")],
             isError=True
         )
 

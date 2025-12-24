@@ -5,13 +5,14 @@ SSE (Server-Sent Events) Router
 LLM 스트리밍 응답을 통한 텍스트 요약 기능을 제공합니다.
 """
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Query
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel
 from typing import AsyncGenerator, Optional
 import asyncio
 import json
+import re
 from datetime import datetime
 from app.services.llm_service import llm_service
 
@@ -19,6 +20,245 @@ router = APIRouter(
     prefix="/sse",
     tags=["SSE"],
 )
+
+
+@router.get("/extract-schedule-with-conflict")
+async def extract_schedule_with_conflict(
+    request: Request,
+    text: str = Query(..., description="일정을 추출할 대화 내용/회의록"),
+    user_id: int = Query(..., description="사용자 ID (충돌 감지용)"),
+    max_tokens: Optional[int] = Query(1024, description="최대 토큰 수"),
+    temperature: Optional[float] = Query(0.1, description="생성 온도")
+):
+    """
+    텍스트에서 일정을 추출하고 기존 캘린더와의 충돌을 확인하는 통합 엔드포인트
+
+    Query Parameters:
+        - text (str): 일정이 포함된 대화 내용/회의록
+        - user_id (int): 충돌을 확인할 사용자 ID
+        - max_tokens (int, optional): 최대 토큰 수 (기본값: 1024)
+        - temperature (float, optional): 생성 온도 (기본값: 0.1)
+
+    Returns:
+        SSE 스트림으로 다음 이벤트들을 반환:
+        - start: 추출 시작 알림
+        - message: 생성 중인 토큰 (실시간)
+        - schedule: 추출된 개별 일정
+        - conflict: 충돌 정보
+        - complete: 처리 완료 알림
+        - error: 에러 발생 시
+    """
+    if not llm_service.is_loaded:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "모델이 로드되지 않았습니다.",
+                "hint": "서버가 시작 중이거나 모델 로드에 실패했습니다."
+            }
+        )
+
+    async def schedule_conflict_generator() -> AsyncGenerator[ServerSentEvent, None]:
+        """일정 추출 및 충돌 감지 스트리밍 제너레이터"""
+        token_count = 0
+        full_response = ""
+
+        try:
+            # 시스템 프롬프트
+            system_prompt = """You are an AI assistant specialized in extracting schedule information from Korean text.
+Extract all schedules from the given text and return them as a JSON array.
+
+Return format:
+[
+  {
+    "title": "일정 제목",
+    "description": "상세 설명",
+    "startDate": "YYYY-MM-DD",
+    "startTime": "HH:MM",
+    "endDate": "YYYY-MM-DD",
+    "endTime": "HH:MM",
+    "location": "장소 (있는 경우)",
+    "attendees": ["참석자1", "참석자2"]
+  }
+]
+
+Important:
+- Extract ALL schedules from the text
+- Use relative date expressions (내일, 다음주 등) converted to actual dates based on today
+- If time is not specified, use "09:00" for start and "10:00" for end
+- If end date/time is not specified, assume 1 hour duration
+- Return ONLY valid JSON array, no additional text
+- If no schedules found, return empty array: []"""
+
+            user_prompt = f"오늘 날짜는 {datetime.now().strftime('%Y-%m-%d')}입니다.\n\n다음 텍스트에서 모든 일정을 추출하세요:\n\n{text}"
+
+            # 시작 이벤트
+            yield ServerSentEvent(
+                data=json.dumps({
+                    "type": "start",
+                    "message": "일정 추출 시작",
+                    "text_length": len(text),
+                    "user_id": user_id,
+                    "model": llm_service.model_id,
+                    "timestamp": datetime.now().isoformat()
+                }, ensure_ascii=False),
+                event="start"
+            )
+
+            # LLM 스트리밍 생성
+            for token in llm_service.generate_stream(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                max_new_tokens=max_tokens,
+                temperature=temperature,
+            ):
+                if await request.is_disconnected():
+                    break
+
+                token_count += 1
+                full_response += token
+
+                yield ServerSentEvent(
+                    data=json.dumps({
+                        "token": token,
+                        "full_text": full_response,
+                        "token_count": token_count
+                    }, ensure_ascii=False),
+                    event="message",
+                    id=str(token_count)
+                )
+
+                await asyncio.sleep(0)
+
+            # JSON 파싱 시도
+            try:
+                # JSON 배열 추출 (```json ... ``` 또는 [ ... ] 형태)
+                json_match = re.search(r'\[[\s\S]*\]', full_response)
+                if json_match:
+                    schedules = json.loads(json_match.group())
+                else:
+                    schedules = []
+            except json.JSONDecodeError:
+                schedules = []
+
+            # 각 일정에 대해 충돌 확인
+            from app.core.database import AsyncSessionLocal
+            from sqlalchemy import text
+
+            all_conflicts = []
+
+            async with AsyncSessionLocal() as session:
+                for idx, schedule in enumerate(schedules):
+                    start_date = schedule.get("startDate", "")
+                    start_time = schedule.get("startTime", "09:00")
+                    end_date = schedule.get("endDate", start_date)
+                    end_time = schedule.get("endTime", "10:00")
+
+                    if not start_date:
+                        continue
+
+                    # 일정 이벤트 전송
+                    yield ServerSentEvent(
+                        data=json.dumps({
+                            "index": idx,
+                            "schedule": schedule
+                        }, ensure_ascii=False),
+                        event="schedule"
+                    )
+
+                    # 충돌 확인 쿼리
+                    try:
+                        new_start = datetime.strptime(f"{start_date} {start_time}", "%Y-%m-%d %H:%M")
+                        new_end = datetime.strptime(f"{end_date} {end_time}", "%Y-%m-%d %H:%M")
+
+                        sql = text("""
+                            SELECT 
+                                ce.id, ce.title, ce.start_date, ce.start_time, 
+                                ce.end_date, ce.end_time, ce.is_all_day
+                            FROM calendar_events ce
+                            JOIN calendars c ON ce.calendar_id = c.id
+                            WHERE c.owner_id = :user_id
+                              AND ce.status = 'scheduled'
+                              AND (
+                                CASE 
+                                  WHEN ce.is_all_day = 1 THEN
+                                    DATE(ce.start_date) <= DATE(:new_end_date) 
+                                    AND DATE(ce.end_date) >= DATE(:new_start_date)
+                                  ELSE
+                                    TIMESTAMP(ce.start_date, COALESCE(ce.start_time, '00:00:00')) < :new_end
+                                    AND TIMESTAMP(ce.end_date, COALESCE(ce.end_time, '23:59:59')) > :new_start
+                                END
+                              )
+                            LIMIT 10
+                        """)
+
+                        result = await session.execute(sql, {
+                            "user_id": user_id,
+                            "new_start": new_start,
+                            "new_end": new_end,
+                            "new_start_date": start_date,
+                            "new_end_date": end_date,
+                        })
+                        conflicts = result.fetchall()
+
+                        if conflicts:
+                            conflict_events = []
+                            for row in conflicts:
+                                conflict_events.append({
+                                    "id": row[0],
+                                    "title": row[1],
+                                    "start_date": str(row[2]) if row[2] else None,
+                                    "start_time": str(row[3]) if row[3] else None,
+                                    "end_date": str(row[4]) if row[4] else None,
+                                    "end_time": str(row[5]) if row[5] else None,
+                                    "is_all_day": bool(row[6])
+                                })
+
+                            conflict_info = {
+                                "schedule_index": idx,
+                                "schedule_title": schedule.get("title", ""),
+                                "has_conflict": True,
+                                "conflicting_events": conflict_events
+                            }
+                            all_conflicts.append(conflict_info)
+
+                            # 충돌 이벤트 전송
+                            yield ServerSentEvent(
+                                data=json.dumps(conflict_info, ensure_ascii=False, default=str),
+                                event="conflict"
+                            )
+                    except Exception as e:
+                        print(f"충돌 확인 오류: {e}")
+
+            # 완료 이벤트
+            yield ServerSentEvent(
+                data=json.dumps({
+                    "type": "complete",
+                    "message": "일정 추출 및 충돌 확인 완료",
+                    "total_schedules": len(schedules),
+                    "total_conflicts": len(all_conflicts),
+                    "schedules": schedules,
+                    "conflicts": all_conflicts,
+                    "total_tokens": token_count,
+                    "timestamp": datetime.now().isoformat()
+                }, ensure_ascii=False, default=str),
+                event="complete"
+            )
+
+        except Exception as e:
+            yield ServerSentEvent(
+                data=json.dumps({
+                    "error": str(e),
+                    "type": type(e).__name__
+                }, ensure_ascii=False),
+                event="error"
+            )
+
+        except asyncio.CancelledError:
+            print(f"일정 추출 스트리밍 취소됨. 생성된 토큰 수: {token_count}")
+
+    return EventSourceResponse(schedule_conflict_generator())
+
+
 
 
 @router.get("/extract-schedule")
